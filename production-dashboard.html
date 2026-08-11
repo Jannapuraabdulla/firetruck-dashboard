@@ -358,8 +358,9 @@ tr.r-unread:hover td{background:rgba(255,255,255,0.05)!important;}
 .card3d{transform-style:preserve-3d;transition:transform .4s;}
 .kpi3d{cursor:pointer;}
 /* login gate */
-.gate{position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;align-items:center;justify-content:center;animation:gateSlide 0s .01s both;}
-@keyframes gateSlide{to{opacity:0;pointer-events:none;visibility:hidden;}}
+.gate{position:fixed;inset:0;background:var(--bg);z-index:500;display:flex;align-items:center;justify-content:center;}
+.gatecard{animation:gateSlide .4s cubic-bezier(.16,1,.3,1) both;}
+@keyframes gateSlide{from{opacity:0;transform:translateY(16px) scale(.98);}to{opacity:1;transform:none;}}
 .gatecard{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:2rem;width:min(92vw,380px);box-shadow:0 16px 48px rgba(0,0,0,.6);display:flex;flex-direction:column;gap:.85rem;}
 .gatecard .grule{height:4px;background:var(--signal);border-radius:2px;margin-bottom:.25rem;}
 .gatecard h1{font-family:var(--font-display);font-size:1.15rem;font-weight:700;}
