@@ -4190,7 +4190,6 @@ Screen: <span id="ps-screen">—</span>
 // =================================================================
 // FIRETRUCK OPS DASHBOARD — JS
 // =================================================================
-const LOGIN_USER='Shakeel.Abdulla',LOGIN_PASS='Operations@2026';
 const STAGES=['KOM','ENG','PUR','PROD','QC','DEL','INV'];
 const SN={KOM:'KOM',ENG:'Engineering',PUR:'Purchase',PROD:'Production',QC:'QC/FAT',DEL:'Delivery',INV:'Closed'};
 const ENGINEERS=['Babu','Luay','Shaikh','Raphael','Maclean','Vishwajith'];
@@ -4554,18 +4553,18 @@ function projectToRow(p){return[p.pn,p.client,p.desc,p.cat,p.qty,p.engineer,p.st
 
 function loadData(){
   try{
-    const stored=localStorage.getItem('ft_projects_v3');
+    const stored=LS_get('ft_projects_v3');
     if(stored){const arr=JSON.parse(stored);if(Array.isArray(arr)&&arr.length>0){return arr.map(rowToProject);}}
   }catch(e){console.warn(e);}
   return DEFAULT_DATA.map(r=>{const p=rowToProject(r);if(!p.sub)p.sub={};return p;});
 }
-function saveData(){try{localStorage.setItem('ft_projects_v3',JSON.stringify(projects.map(projectToRow)));localStorage.setItem('ft_save_date',new Date().toISOString());}catch(e){console.warn(e);}}
-function loadMistakes(){try{const s=localStorage.getItem('ft_mistakes_v2');if(s){const a=JSON.parse(s);if(Array.isArray(a))return a;}}catch(e){}return[];}
-function saveMistakes(){try{localStorage.setItem('ft_mistakes_v2',JSON.stringify(manualMistakes));}catch(e){}}
+function saveData(){try{LS_set('ft_projects_v3',JSON.stringify(projects.map(projectToRow)));LS_set('ft_save_date',new Date().toISOString());}catch(e){console.warn(e);}}
+function loadMistakes(){try{const s=LS_get('ft_mistakes_v2');if(s){const a=JSON.parse(s);if(Array.isArray(a))return a;}}catch(e){}return[];}
+function saveMistakes(){try{LS_set('ft_mistakes_v2',JSON.stringify(manualMistakes));}catch(e){}}
 
 // Team email configuration — user fills in
 function loadTeamEmails(){
-  try{const s=localStorage.getItem('ft_team_emails_v1');if(s){const o=JSON.parse(s);if(o&&typeof o==='object'){
+  try{const s=LS_get('ft_team_emails_v1');if(s){const o=JSON.parse(s);if(o&&typeof o==='object'){
     if(o.hamza)NAFFCO_TEAM.storesManagers.Hamza.email=o.hamza;
     if(o.ananthan)NAFFCO_TEAM.storesManagers.Ananthan.email=o.ananthan;
     if(o.anis)NAFFCO_TEAM.purchaseHead.email=o.anis;
@@ -4600,7 +4599,7 @@ function loadTeamEmails(){
   }}}catch(e){}
 }
 function saveTeamEmails(){
-  try{localStorage.setItem('ft_team_emails_v1',JSON.stringify({
+  try{LS_set('ft_team_emails_v1',JSON.stringify({
     hamza:NAFFCO_TEAM.storesManagers.Hamza.email,
     ananthan:NAFFCO_TEAM.storesManagers.Ananthan.email,
     anis:NAFFCO_TEAM.purchaseHead.email,
@@ -4632,12 +4631,12 @@ function saveTeamEmails(){
 }
 
 // Materials data per project (uploaded qlikview Excel)
-function loadMaterials(){try{const s=localStorage.getItem('ft_materials_v1');if(s){return JSON.parse(s);}}catch(e){}return{};}
-function saveMaterials(data){try{localStorage.setItem('ft_materials_v1',JSON.stringify(data));}catch(e){console.warn(e);}}
+function loadMaterials(){try{const s=LS_get('ft_materials_v1');if(s){return JSON.parse(s);}}catch(e){}return{};}
+function saveMaterials(data){try{LS_set('ft_materials_v1',JSON.stringify(data));}catch(e){console.warn(e);}}
 
 // SALES LOG — Deviations, technical questions, equipment sizing requests
-function loadSalesLog(){try{const s=localStorage.getItem('ft_saleslog_v1');if(s){const a=JSON.parse(s);if(Array.isArray(a))return a;}}catch(e){}return[];}
-function saveSalesLog(){try{localStorage.setItem('ft_saleslog_v1',JSON.stringify(salesLog));}catch(e){}}
+function loadSalesLog(){try{const s=LS_get('ft_saleslog_v1');if(s){const a=JSON.parse(s);if(Array.isArray(a))return a;}}catch(e){}return[];}
+function saveSalesLog(){try{LS_set('ft_saleslog_v1',JSON.stringify(salesLog));}catch(e){}}
 
 const SL_TYPES=[
   {key:'deviation',lbl:'⚠ Spec Deviation',icon:'⚠',color:'var(--red)',cls:'br',hint:'e.g., Pump flow in spec is 3000 LPM but contract says 4000 LPM — needs approval from sales'},
@@ -4665,29 +4664,95 @@ function nextSlId(){
 // =================================================================
 // AUTH
 // =================================================================
-function doLogin(){
+// =================================================================
+// BACKEND SYNC
+// =================================================================
+const API_BASE='/api';
+let AUTH_TOKEN=null;
+const _pendingSync={};
+let _syncTimer=null;
+
+function authHeaders(extra){
+  return Object.assign({'Authorization':'Bearer '+AUTH_TOKEN},extra||{});
+}
+
+// Synchronous cache reader (data is hydrated into localStorage on login)
+function LS_get(key){return localStorage.getItem(key);}
+
+// Writes to local cache immediately and queues a background sync to the server
+function LS_set(key,val){
+  localStorage.setItem(key,val);
+  if(!AUTH_TOKEN)return;
+  _pendingSync[key]=val;
+  if(_syncTimer)clearTimeout(_syncTimer);
+  _syncTimer=setTimeout(flushPendingSync,800);
+}
+
+function flushPendingSync(){
+  const entries=Object.entries(_pendingSync);
+  entries.forEach(([key,val])=>{
+    delete _pendingSync[key];
+    fetch(`${API_BASE}/data/${encodeURIComponent(key)}`,{
+      method:'PUT',
+      headers:authHeaders({'Content-Type':'application/json'}),
+      body:JSON.stringify({value:val})
+    }).catch(e=>console.warn('Sync failed for',key,e));
+  });
+}
+
+// Pulls all stored data from the server into the local cache before the app initializes
+async function syncFromServer(){
+  try{
+    const res=await fetch(`${API_BASE}/data`,{headers:authHeaders()});
+    if(!res.ok)return;
+    const data=await res.json();
+    Object.entries(data).forEach(([key,val])=>{
+      try{localStorage.setItem(key,val);}catch(e){}
+    });
+  }catch(e){
+    console.warn('Could not sync from server, using local cache',e);
+  }
+}
+
+// =================================================================
+// AUTH
+// =================================================================
+async function doLogin(){
   const u=document.getElementById('login-user').value.trim();
   const p=document.getElementById('login-pass').value;
-  if(u.toLowerCase()===LOGIN_USER.toLowerCase()&&p===LOGIN_PASS){
-    // No persistence — every page open requires fresh login
+  const errEl=document.getElementById('login-err');
+  try{
+    const res=await fetch(`${API_BASE}/login`,{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username:u,password:p})
+    });
+    if(!res.ok)throw new Error('bad credentials');
+    const data=await res.json();
+    AUTH_TOKEN=data.token;
+    sessionStorage.setItem('ft_auth_token',AUTH_TOKEN);
+    sessionStorage.setItem('ft_auth_user',data.username);
+    await syncFromServer();
     document.getElementById('login-overlay').style.display='none';
     document.getElementById('app').classList.add('on');
     initApp();
     setTimeout(()=>{try{updateFabVisibility();}catch(e){}},100);
-  }else{
-    document.getElementById('login-err').classList.add('on');
-    setTimeout(()=>document.getElementById('login-err').classList.remove('on'),2500);
+  }catch(e){
+    errEl.classList.add('on');
+    setTimeout(()=>errEl.classList.remove('on'),2500);
   }
 }
 function doLogout(){
-  // Clear any legacy session flag (from older versions) then reload
+  try{sessionStorage.removeItem('ft_auth_token');}catch(e){}
+  try{sessionStorage.removeItem('ft_auth_user');}catch(e){}
   try{sessionStorage.removeItem('ft_auth');}catch(e){}
   try{localStorage.removeItem('ft_auth');}catch(e){}
   location.reload();
 }
 function checkAuth(){
   // Always return false — login required on every page open
-  // Clear any legacy stored auth as a safety net
+  try{sessionStorage.removeItem('ft_auth_token');}catch(e){}
+  try{sessionStorage.removeItem('ft_auth_user');}catch(e){}
   try{sessionStorage.removeItem('ft_auth');}catch(e){}
   try{localStorage.removeItem('ft_auth');}catch(e){}
   return false;
@@ -6608,7 +6673,7 @@ ${['KOM','ENG','PUR','PROD','QC','DEL'].map(s=>{
 // LONG-LEAD-ITEM ALERTS — Items ordered >120 days ago without ETA
 // =================================================================
 function getLongLeadThreshold(){
-  try{const v=localStorage.getItem('ft_long_lead_days');if(v)return parseInt(v)||120;}catch(e){}
+  try{const v=LS_get('ft_long_lead_days');if(v)return parseInt(v)||120;}catch(e){}
   return 120;
 }
 
@@ -6693,7 +6758,7 @@ function changeLongLeadThreshold(){
   if(v===null)return;
   const n=parseInt(v);
   if(isNaN(n)||n<7){showToast('Invalid','Use a number ≥ 7',true);return;}
-  try{localStorage.setItem('ft_long_lead_days',n);}catch(e){}
+  try{LS_set('ft_long_lead_days',n);}catch(e){}
   showToast('✓ Updated',`Threshold now ${n} days`);
   openLongLeadDashboard();
 }
@@ -7875,16 +7940,16 @@ const AUDIT_KEY='ft_audit_v1';
 const AUDIT_MAX=2000;
 function logAudit(action,category,detail){
   try{
-    const log=JSON.parse(localStorage.getItem(AUDIT_KEY)||'[]');
+    const log=JSON.parse(LS_get(AUDIT_KEY)||'[]');
     log.unshift({ts:new Date().toISOString(),action,category:category||'general',detail:detail||'',user:'Shakeel Abdulla'});
     if(log.length>AUDIT_MAX)log.length=AUDIT_MAX;
-    localStorage.setItem(AUDIT_KEY,JSON.stringify(log));
+    LS_set(AUDIT_KEY,JSON.stringify(log));
   }catch(e){/* storage full — skip silently */}
 }
 function openAuditLog(){renderAuditLog();openModal('modal-audit');}
 function renderAuditLog(){
   let log=[];
-  try{log=JSON.parse(localStorage.getItem(AUDIT_KEY)||'[]');}catch(e){}
+  try{log=JSON.parse(LS_get(AUDIT_KEY)||'[]');}catch(e){}
   const q=($('audit-search')?.value||'').toLowerCase();
   const f=$('audit-filter')?.value||'';
   const filtered=log.filter(e=>{
@@ -7909,7 +7974,7 @@ function renderAuditLog(){
 }
 function clearAuditLog(){if(!confirm('Clear the entire activity log? This cannot be undone.'))return;localStorage.removeItem(AUDIT_KEY);renderAuditLog();showToast('Cleared','Activity log cleared');}
 function exportAuditLog(){
-  let log=[];try{log=JSON.parse(localStorage.getItem(AUDIT_KEY)||'[]');}catch(e){}
+  let log=[];try{log=JSON.parse(LS_get(AUDIT_KEY)||'[]');}catch(e){}
   if(typeof XLSX==='undefined'){showToast('Library missing','',true);return;}
   const aoa=[['ACTIVITY LOG / AUDIT TRAIL'],['Generated:',new Date().toLocaleString('en-GB')],[],['Date/Time','User','Category','Action','Detail']];
   log.forEach(e=>aoa.push([new Date(e.ts).toLocaleString('en-GB'),e.user||'',e.category||'',e.action||'',e.detail||'']));
@@ -7924,10 +7989,10 @@ function exportAuditLog(){
 // =================================================================
 function checkBackupHealth(){
   try{
-    const lastExport=localStorage.getItem('ft_last_export');
+    const lastExport=LS_get('ft_last_export');
     const now=Date.now();
     // Storage pressure check
-    let total=0;for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i),v=localStorage.getItem(k);if(v)total+=k.length+v.length;}
+    let total=0;for(let i=0;i<localStorage.length;i++){const k=localStorage.key(i),v=LS_get(k);if(v)total+=k.length+v.length;}
     const usedMB=total/1024/1024;
     if(usedMB>7){
       showToast('⚠️ Storage nearly full',`Using ${usedMB.toFixed(1)}MB of ~10MB. Export a backup and consider compressing VRIR photos.`,true);
@@ -8455,7 +8520,7 @@ const I18N={
   }
 };
 
-let _lang=localStorage.getItem('ft_lang_v1')||'en';
+let _lang=LS_get('ft_lang_v1')||'en';
 
 function t(key){
   const dict=I18N[_lang]||I18N.en;
@@ -8465,7 +8530,7 @@ function t(key){
 function setLanguage(lang){
   if(!I18N[lang])lang='en';
   _lang=lang;
-  try{localStorage.setItem('ft_lang_v1',lang);}catch(e){}
+  try{LS_set('ft_lang_v1',lang);}catch(e){}
   applyLanguage();
   // sync selectors
   const h=$('lang-select-header');if(h)h.value=lang;
@@ -8541,14 +8606,14 @@ let _proSettings=null;
 
 function psLoad(){
   try{
-    const raw=localStorage.getItem('ft_settings_v1');
+    const raw=LS_get('ft_settings_v1');
     _proSettings=raw?Object.assign({},PS_DEFAULTS,JSON.parse(raw)):Object.assign({},PS_DEFAULTS);
   }catch(e){_proSettings=Object.assign({},PS_DEFAULTS);}
   return _proSettings;
 }
 
 function psSave(){
-  try{localStorage.setItem('ft_settings_v1',JSON.stringify(_proSettings));}catch(e){console.warn('Settings save failed:',e);}
+  try{LS_set('ft_settings_v1',JSON.stringify(_proSettings));}catch(e){console.warn('Settings save failed:',e);}
 }
 
 const PS_FONT_STACKS={
@@ -8780,7 +8845,7 @@ function psUpdateStorageBar(){
   try{
     let total=0;
     for(let i=0;i<localStorage.length;i++){
-      const k=localStorage.key(i),v=localStorage.getItem(k);
+      const k=localStorage.key(i),v=LS_get(k);
       if(v)total+=k.length+v.length;
     }
     const totalKB=total/1024;
@@ -10848,10 +10913,10 @@ function getDefaultTeam(teamKey){
 
 function loadHodKpi(){
   try{
-    const s=localStorage.getItem('ft_team_kpi_v2');
+    const s=LS_get('ft_team_kpi_v2');
     if(s)return JSON.parse(s);
     // Migrate from old v1 schema
-    const oldS=localStorage.getItem('ft_hod_kpi_v1');
+    const oldS=LS_get('ft_hod_kpi_v1');
     if(oldS){
       const old=JSON.parse(oldS);
       const migrated={
@@ -10880,7 +10945,7 @@ function loadHodKpi(){
 }
 
 function saveHodKpi(data){
-  try{localStorage.setItem('ft_team_kpi_v2',JSON.stringify(data));}catch(e){}
+  try{LS_set('ft_team_kpi_v2',JSON.stringify(data));}catch(e){}
 }
 
 function getDefaultPeriod(){
@@ -14071,7 +14136,7 @@ async function handleUpload(file){
 
 function exportData(){
   if(typeof XLSX==='undefined'){showToast('Library missing','XLSX library not loaded',true);return;}
-  try{localStorage.setItem('ft_last_export',Date.now().toString());}catch(e){}
+  try{LS_set('ft_last_export',Date.now().toString());}catch(e){}
   try{logAudit('Exported all project data','export',projects.length+' projects');}catch(e){}
   // Sheet 1: Projects (with Stage validation hint in header)
   const headers=['PN','Client','Description','Category','Quantity','Engineer','Stage','Delivery Month','Country','Salesman','Comments','Delayed','Progress %'];
@@ -15355,17 +15420,17 @@ ${isOverdue?`<button onclick="escalateApprovalToDirector('${a.id}')" style="back
 // APPROVAL: WhatsApp / SMS / Delegation / Escalation
 // =================================================================
 function getTLPhone(){
-  try{return localStorage.getItem('ft_tl_phone')||'';}catch(e){return '';}
+  try{return LS_get('ft_tl_phone')||'';}catch(e){return '';}
 }
 function getDirectorPhone(){
-  try{return localStorage.getItem('ft_director_phone')||'';}catch(e){return '';}
+  try{return LS_get('ft_director_phone')||'';}catch(e){return '';}
 }
 function getDelegate(){
-  try{const s=localStorage.getItem('ft_delegate');if(s)return JSON.parse(s);}catch(e){}
+  try{const s=LS_get('ft_delegate');if(s)return JSON.parse(s);}catch(e){}
   return null;
 }
 function setDelegate(name,until){
-  try{localStorage.setItem('ft_delegate',JSON.stringify({name,until,active:true,setAt:new Date().toISOString()}));}catch(e){}
+  try{LS_set('ft_delegate',JSON.stringify({name,until,active:true,setAt:new Date().toISOString()}));}catch(e){}
 }
 function clearDelegate(){
   try{localStorage.removeItem('ft_delegate');}catch(e){}
@@ -15385,7 +15450,7 @@ function notifyApprovalWhatsApp(approvalId){
   if(!phone){
     if(confirm('No TL phone set. Set it now?\n(Format: country code + number, no spaces, e.g., 971501234567)')){
       const v=prompt('Enter TL phone:','971');
-      if(v){try{localStorage.setItem('ft_tl_phone',v.replace(/\D/g,''));}catch(e){}}
+      if(v){try{LS_set('ft_tl_phone',v.replace(/\D/g,''));}catch(e){}}
     }
     return;
   }
@@ -15402,7 +15467,7 @@ function notifyApprovalSMS(approvalId){
   if(!phone){
     if(confirm('No TL phone set. Set it now?')){
       const v=prompt('Enter TL phone:','971');
-      if(v){try{localStorage.setItem('ft_tl_phone',v.replace(/\D/g,''));}catch(e){}}
+      if(v){try{LS_set('ft_tl_phone',v.replace(/\D/g,''));}catch(e){}}
     }
     return;
   }
@@ -15952,11 +16017,11 @@ function saveTeamEmailsFromForm(){
   NAFFCO_TEAM.elecProdEmails['Amjad']=g('te-amjad');
   // Save phone + delegate + longlead settings
   try{
-    const tlPhone=g('te-tl-phone');if(tlPhone)localStorage.setItem('ft_tl_phone',tlPhone.replace(/\D/g,''));else localStorage.removeItem('ft_tl_phone');
-    const dirPhone=g('te-dir-phone');if(dirPhone)localStorage.setItem('ft_director_phone',dirPhone.replace(/\D/g,''));else localStorage.removeItem('ft_director_phone');
+    const tlPhone=g('te-tl-phone');if(tlPhone)LS_set('ft_tl_phone',tlPhone.replace(/\D/g,''));else localStorage.removeItem('ft_tl_phone');
+    const dirPhone=g('te-dir-phone');if(dirPhone)LS_set('ft_director_phone',dirPhone.replace(/\D/g,''));else localStorage.removeItem('ft_director_phone');
     const dlgName=g('te-delegate-name');const dlgUntil=g('te-delegate-until');
     if(dlgName)setDelegate(dlgName,dlgUntil);else clearDelegate();
-    const llDays=g('te-longlead-days');if(llDays)localStorage.setItem('ft_long_lead_days',parseInt(llDays)||120);
+    const llDays=g('te-longlead-days');if(llDays)LS_set('ft_long_lead_days',parseInt(llDays)||120);
   }catch(e){}
   // Parse custom team
   const ctRaw=g('te-customteam');
@@ -16286,8 +16351,8 @@ function openStoresReminderForItem(pn,idx){
 // =================================================================
 // REMINDER LOG — Track all reminders sent with 1-day debounce
 // =================================================================
-function loadReminderLog(){try{const s=localStorage.getItem('ft_reminder_log_v1');if(s){const a=JSON.parse(s);if(Array.isArray(a))return a;}}catch(e){}return[];}
-function saveReminderLog(){try{localStorage.setItem('ft_reminder_log_v1',JSON.stringify(window.reminderLog||[]));}catch(e){}}
+function loadReminderLog(){try{const s=LS_get('ft_reminder_log_v1');if(s){const a=JSON.parse(s);if(Array.isArray(a))return a;}}catch(e){}return[];}
+function saveReminderLog(){try{LS_set('ft_reminder_log_v1',JSON.stringify(window.reminderLog||[]));}catch(e){}}
 
 // Log a reminder. Returns {logged, count, lastSent, isDuplicate}
 // Only logs if last reminder for same key was >24h ago (debounce)
@@ -17749,7 +17814,7 @@ function renderKPIReviewBanner(lastDate,today,daysSince){
 }
 
 function markKPIReviewed(){
-  localStorage.setItem('ft_kpi_last_review',new Date().toISOString());
+  LS_set('ft_kpi_last_review',new Date().toISOString());
   showToast('✓ Marked Reviewed','Weekly KPI review logged. Next reminder in 7 days. Click "Revert" if marked by mistake.');
   renderKPI();
 }
@@ -17765,7 +17830,7 @@ function revertKPIReviewed(){
 function renderKPI(){
   // Weekly KPI review reminder — for head of department
   const lastReviewKey='ft_kpi_last_review';
-  const lastReview=localStorage.getItem(lastReviewKey);
+  const lastReview=LS_get(lastReviewKey);
   const reviewBanner=$('kpi-review-banner');
   if(reviewBanner){
     const today=new Date();
@@ -25484,7 +25549,7 @@ function handleDocUpload(files){
 
 function verifyDocsSaved(pn){
   try{
-    const stored=localStorage.getItem('ft_projects_v3');
+    const stored=LS_get('ft_projects_v3');
     if(!stored)return false;
     const arr=JSON.parse(stored);
     const proj=arr.find(r=>String(r[0])===String(pn));
@@ -25727,7 +25792,7 @@ function doPhotoUpload(files,category){
 
 function verifyPhotosSaved(pn){
   try{
-    const stored=localStorage.getItem('ft_projects_v3');
+    const stored=LS_get('ft_projects_v3');
     if(!stored)return false;
     const arr=JSON.parse(stored);
     const proj=arr.find(r=>String(r[0])===String(pn));
@@ -25868,14 +25933,14 @@ function toggleSidebar(){
   sb.classList.toggle('expanded');
   const icon=$('lsb-pin-icon');
   if(icon)icon.textContent=sb.classList.contains('expanded')?'◀':'📌';
-  try{localStorage.setItem('ft_sidebar_expanded',sb.classList.contains('expanded')?'1':'0');}catch(e){}
+  try{LS_set('ft_sidebar_expanded',sb.classList.contains('expanded')?'1':'0');}catch(e){}
 }
 function setSidebarActive(el){
   document.querySelectorAll('.lsb-item').forEach(i=>i.classList.remove('active'));
   if(el)el.classList.add('active');
 }
 function restoreSidebar(){
-  try{if(localStorage.getItem('ft_sidebar_expanded')==='1'){const sb=$('left-sidebar');if(sb){sb.classList.add('expanded');const i=$('lsb-pin-icon');if(i)i.textContent='◀';}}}catch(e){}
+  try{if(LS_get('ft_sidebar_expanded')==='1'){const sb=$('left-sidebar');if(sb){sb.classList.add('expanded');const i=$('lsb-pin-icon');if(i)i.textContent='◀';}}}catch(e){}
 }
 
 function showTab(t,btn){
@@ -25916,7 +25981,7 @@ function renderAll(){
 }
 
 function setLiveTime(){const d=new Date();$('live-dt').textContent='LIVE · '+d.toLocaleString('en-GB',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});}
-function showStatus(){try{const date=localStorage.getItem('ft_save_date');if(date){const d=new Date(date);$('tb-status').innerHTML=`<span class="dot" style="background:var(--green);box-shadow:0 0 6px var(--green)"></span> Auto-saved · ${d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'})}, ${d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}`;}else{$('tb-status').innerHTML=`<span style="color:var(--txt3)">Default data · Edit any cell to start</span>`;}}catch(e){}}
+function showStatus(){try{const date=LS_get('ft_save_date');if(date){const d=new Date(date);$('tb-status').innerHTML=`<span class="dot" style="background:var(--green);box-shadow:0 0 6px var(--green)"></span> Auto-saved · ${d.toLocaleDateString('en-GB',{day:'2-digit',month:'short'})}, ${d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'})}`;}else{$('tb-status').innerHTML=`<span style="color:var(--txt3)">Default data · Edit any cell to start</span>`;}}catch(e){}}
 
 function initApp(){
   projects=loadData();manualMistakes=loadMistakes();salesLog=loadSalesLog();
